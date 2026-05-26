@@ -1,0 +1,38 @@
+[
+  {
+    "phone": "919184337",
+    "password": "1234",
+    "balance": 0,
+    "points": 50
+  },
+  {
+    "phone": "969033520",
+    "password": "12345",
+    "balance": 0,
+    "points": 50
+  },
+  {
+    "phone": "9197373882",
+    "password": "12345",
+    "balance": 0,
+    "points": 50
+  },
+  {
+    "phone": "966617175",
+    "password": "12345",
+    "balance": 0,
+    "points": 50
+  },
+  {
+    "phone": "9197373883",
+    "password": "12345",
+    "balance": 0,
+    "points": 50
+  },
+  {
+    "phone": "911121314",
+    "password": "123",
+    "balance": 0,
+    "points": 50
+  }
+]
